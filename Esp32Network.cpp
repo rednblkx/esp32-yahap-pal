@@ -20,13 +20,13 @@ static const int WIFI_CONNECTED_BIT = BIT0;
 static const int WIFI_FAIL_BIT = BIT1;
 static int s_retry_num = 0;
 static const int MAX_RETRY = 10;
-#if CONFIG_EXAMPLE_ITWT_TRIGGER_ENABLE
+#if CONFIG_ITWT_TRIGGER_ENABLE
 uint8_t trigger_enabled = 1;
 #else
 uint8_t trigger_enabled = 0;
 #endif
 
-#if CONFIG_EXAMPLE_ITWT_ANNOUNCED
+#if CONFIG_ITWT_ANNOUNCED
 uint8_t flow_type_announced = 1;
 #else
 uint8_t flow_type_announced = 0;
@@ -64,12 +64,12 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
           .trigger = trigger_enabled,
           .flow_type = static_cast<uint16_t>(flow_type_announced ? 0 : 1),
           .flow_id = 0,
-          .wake_invl_expn = CONFIG_EXAMPLE_ITWT_WAKE_INVL_EXPN,
-          .wake_duration_unit = CONFIG_EXAMPLE_ITWT_WAKE_DURATION_UNIT,
-          .min_wake_dura = CONFIG_EXAMPLE_ITWT_MIN_WAKE_DURA,
-          .wake_invl_mant = CONFIG_EXAMPLE_ITWT_WAKE_INVL_MANT,
-          .twt_id = CONFIG_EXAMPLE_ITWT_ID,
-          .timeout_time_ms = CONFIG_EXAMPLE_ITWT_SETUP_TIMEOUT_TIME_MS,
+          .wake_invl_expn = CONFIG_ITWT_WAKE_INVL_EXPN,
+          .wake_duration_unit = CONFIG_ITWT_WAKE_DURATION_UNIT,
+          .min_wake_dura = CONFIG_ITWT_MIN_WAKE_DURA,
+          .wake_invl_mant = CONFIG_ITWT_WAKE_INVL_MANT,
+          .twt_id = CONFIG_ITWT_ID,
+          .timeout_time_ms = CONFIG_ITWT_SETUP_TIMEOUT_TIME_MS,
       };
       err = esp_wifi_sta_itwt_setup(&setup_config);
       if (err != ESP_OK) {
