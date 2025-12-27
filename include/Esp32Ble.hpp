@@ -1,8 +1,7 @@
 #pragma once
-#include <sdkconfig.h>
-#if CONFIG_BT_NIMBLE_ENABLED
 
 #include "hap/platform/Ble.hpp"
+#include "hap/platform/Storage.hpp"
 #include <esp_timer.h>
 #include <host/ble_hs.h>
 #include <host/util/util.h>
@@ -10,7 +9,7 @@
 
 class Esp32Ble : public hap::platform::Ble {
 public:
-  Esp32Ble();
+  Esp32Ble(hap::platform::Storage *storage);
   ~Esp32Ble() override = default;
 
   void start_advertising(const Advertisement &data,
@@ -26,6 +25,9 @@ public:
                                uint32_t fast_interval_ms,
                                uint32_t fast_duration_ms,
                                uint32_t normal_interval_ms) override;
+  void start_encrypted_advertising(const EncryptedAdvertisement &data,
+                                   uint32_t interval_ms,
+                                   uint32_t duration_ms) override;
   void start() override;
 
 private:
@@ -55,11 +57,16 @@ private:
   static std::vector<DescriptorContext *> all_descriptor_contexts;
 
   DisconnectCallback disconnect_callback_;
+  hap::platform::Storage *storage_ = nullptr;
 
   // Timed advertising state (for HAP Spec 7.4.6.3 Disconnected Events)
   esp_timer_handle_t adv_timer_ = nullptr;
   Advertisement timed_adv_data_;
   uint32_t normal_interval_ms_ = 1000;
   static void adv_timer_callback(void *arg);
+
+  // Encrypted advertising state (for HAP Spec 7.4.6.2 Broadcasted Events)
+  esp_timer_handle_t enc_adv_timer_ = nullptr;
+  bool encrypted_adv_active_ = false;
+  static void enc_adv_timer_callback(void *arg);
 };
-#endif
