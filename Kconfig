@@ -1,0 +1,17 @@
+menu "YAHAP-PAL"
+
+config PAL_CRYPTO_HKDF
+    bool "Enable HKDF"
+    default y
+    select MBEDTLS_HKDF_C
+
+config PAL_BLE_ENABLED
+    bool "Enable BLE support"
+    default y
+    depends on BT_ENABLED && BT_NIMBLE_ENABLED
+
+config PAL_NETWORK_ENABLED
+    bool "Enable IP support (WiFi)"
+    default y
+    depends on LWIP_ENABLE && LWIP_IPV4 && ESP_NETIF_TCPIP_LWIP
+endmenu
