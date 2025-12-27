@@ -3,8 +3,6 @@
 #if CONFIG_PAL_NETWORK_ENABLED
 #include "hap/platform/Network.hpp"
 #include <atomic>
-#include <esp_event.h>
-#include <esp_wifi.h>
 #include <map>
 #include <mdns.h>
 #include <mutex>
