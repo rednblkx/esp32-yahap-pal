@@ -1,5 +1,11 @@
 menu "YAHAP-PAL"
 
+config PAL_ESPHOME
+  bool "Enable ESPHome support"
+  default n
+  help 
+      Skips mDNS initialization and doesn't set the hostname and instance name 
+
 config PAL_CRYPTO_HKDF
     bool "Enable HKDF"
     default y

@@ -277,19 +277,21 @@ void Esp32Network::mdns_register(const MdnsService &service) {
   if (mdns_initialized_) {
     return;
   }
-
-  esp_err_t err = mdns_init();
+  esp_err_t err;
+  std::string hostname(service.name);
+#ifdef CONFIG_PAL_ESPHOME
+  mdns_initialized_ = true;
+#else
+  err = mdns_init();
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "mDNS init failed: %s", esp_err_to_name(err));
     return;
   }
   mdns_initialized_ = true;
 
-  std::string hostname(service.name);
   mdns_hostname_set(hostname.c_str());
-  mdns_instance_name_set(hostname.c_str());
-
-  // Add service
+#endif
+  mdns_service_instance_name_set("_hap", "_tcp", hostname.c_str());
   err = mdns_service_add(hostname.c_str(), "_hap", "_tcp", service.port,
                          nullptr, 0);
   if (err != ESP_OK) {
