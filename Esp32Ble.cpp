@@ -12,7 +12,6 @@
 #include "esp_log_buffer.h"
 #include "esp_random.h"
 #if CONFIG_IDF_TARGET_ESP32
-#include <esp_nimble_hci.h>
 #endif
 #include <cstdlib>
 #include <cstring>
@@ -109,10 +108,13 @@ static void parse_uuid(const std::string &uuid_str, ble_uuid_any_t *uuid) {
 }
 
 Esp32Ble::Esp32Ble(hap::platform::Storage *storage) : storage_(storage) {
-#if CONFIG_IDF_TARGET_ESP32
-  ESP_ERROR_CHECK(esp_nimble_hci_init());
-#endif
-  nimble_port_init();
+  // nimble_port_init() initializes the BT controller and then calls
+  // esp_nimble_hci_init() itself (IDF 5.x). Calling it here beforehand fails:
+  // the VHCI callbacks cannot register before the controller is enabled.
+  esp_err_t rc = nimble_port_init();
+  if (rc != ESP_OK) {
+    ESP_LOGE(TAG, "nimble_port_init failed: %d", rc);
+  }
 
   g_storage = storage;
   g_ble_instance = this;
@@ -633,6 +635,9 @@ int Esp32Ble::ble_gap_event(struct ble_gap_event *event, void *arg) {
   switch (event->type) {
   case BLE_GAP_EVENT_CONNECT:
     ESP_LOGI(TAG, "Connected");
+    if (g_ble_instance && g_ble_instance->connect_callback_) {
+      g_ble_instance->connect_callback_(event->connect.conn_handle);
+    }
     {
       auto self = static_cast<Esp32Ble *>(arg);
       if (self && self->adv_timer_ != nullptr) {

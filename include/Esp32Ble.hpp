@@ -21,6 +21,7 @@ public:
                        std::span<const uint8_t> data) override;
   void disconnect(uint16_t connection_id) override;
   void set_disconnect_callback(DisconnectCallback callback) override;
+  void set_connect_callback(ConnectCallback callback) override { connect_callback_ = callback; }
   void start_timed_advertising(const Advertisement &data,
                                uint32_t fast_interval_ms,
                                uint32_t fast_duration_ms,
@@ -57,6 +58,7 @@ private:
   static std::vector<DescriptorContext *> all_descriptor_contexts;
 
   DisconnectCallback disconnect_callback_;
+  ConnectCallback connect_callback_;
   hap::platform::Storage *storage_ = nullptr;
 
   // Timed advertising state (for HAP Spec 7.4.6.3 Disconnected Events)
