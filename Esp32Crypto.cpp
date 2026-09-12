@@ -431,21 +431,6 @@ bool Esp32Crypto::srp_verify_client_proof(hap::platform::SRPSession *session,
   hash_update(&ctx, ess->K);
   mbedtls_sha512_finish(&ctx, ess->M2.data());
 
-  ESP_LOGI(TAG, "SRP Debug - M2 Summary:");
-  ESP_LOGI(TAG, "Client Public Key (Received): %d bytes",
-           (int)session->client_public_key.size());
-  ESP_LOG_BUFFER_HEX(TAG, session->client_public_key.data(),
-                     std::min((size_t)64, session->client_public_key.size()));
-  ESP_LOGI(TAG, "A_padded: %d bytes", (int)A_padded.size());
-  ESP_LOG_BUFFER_HEX(TAG, A_padded.data(),
-                     std::min((size_t)64, A_padded.size()));
-  ESP_LOGI(TAG, "M1_calc: %d bytes", (int)M1_calc.size());
-  ESP_LOG_BUFFER_HEX(TAG, M1_calc.data(), M1_calc.size());
-  ESP_LOGI(TAG, "K: %d bytes", (int)ess->K.size());
-  ESP_LOG_BUFFER_HEX(TAG, ess->K.data(), ess->K.size());
-  ESP_LOGI(TAG, "M2 (Result): %d bytes", (int)ess->M2.size());
-  ESP_LOG_BUFFER_HEX(TAG, ess->M2.data(), ess->M2.size());
-
   mbedtls_mpi_free(&N);
   mbedtls_mpi_free(&A);
   mbedtls_mpi_free(&B);
