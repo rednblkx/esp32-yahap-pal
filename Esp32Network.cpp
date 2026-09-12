@@ -57,6 +57,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     wifi_config_t sta_cfg = {};
     esp_wifi_get_config(WIFI_IF_STA, &sta_cfg);
     esp_wifi_sta_get_negotiated_phymode(&phymode);
+#ifdef CONFIG_IDF_TARGET_ESP32C6
     if (phymode == WIFI_PHY_MODE_HE20) {
       esp_err_t err = ESP_OK;
       wifi_itwt_setup_config_t setup_config = {
@@ -78,9 +79,11 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     } else {
       ESP_LOGE(TAG, "Must be in 11ax mode to support itwt");
     }
+#endif
   }
 }
 
+#ifdef CONFIG_IDF_TARGET_ESP32C6
 static void itwt_setup_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
   wifi_event_sta_itwt_setup_t *setup =
@@ -177,6 +180,7 @@ static void itwt_probe_handler(void *arg, esp_event_base_t event_base,
   ESP_LOGI(TAG, "<WIFI_EVENT_ITWT_PROBE>status:%s, reason:0x%x",
            itwt_probe_status_to_str(probe->status), probe->reason);
 }
+#endif
 
 bool Esp32Network::wifi_init(const char *ssid, const char *password) {
   ESP_LOGI(TAG, "Initializing WiFi...");
@@ -198,6 +202,7 @@ bool Esp32Network::wifi_init(const char *ssid, const char *password) {
       IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, nullptr,
       &instance_got_ip));
 
+#ifdef CONFIG_IDF_TARGET_ESP32C6
   /* itwt */
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
       WIFI_EVENT, WIFI_EVENT_ITWT_SETUP, &itwt_setup_handler, NULL, NULL));
@@ -208,6 +213,7 @@ bool Esp32Network::wifi_init(const char *ssid, const char *password) {
       WIFI_EVENT, WIFI_EVENT_ITWT_SUSPEND, &itwt_suspend_handler, NULL, NULL));
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
       WIFI_EVENT, WIFI_EVENT_ITWT_PROBE, &itwt_probe_handler, NULL, NULL));
+#endif
 
   wifi_config_t wifi_config = {};
   strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
@@ -216,11 +222,13 @@ bool Esp32Network::wifi_init(const char *ssid, const char *password) {
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+#ifdef CONFIG_IDF_TARGET_ESP32C6
   wifi_twt_config_t wifi_twt_config = {
       .post_wakeup_event = true,
       .twt_enable_keep_alive = true,
   };
   ESP_ERROR_CHECK(esp_wifi_sta_twt_config(&wifi_twt_config));
+#endif
   esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW20);
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11N | WIFI_PROTOCOL_11AX);
   esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
