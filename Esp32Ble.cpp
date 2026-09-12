@@ -458,7 +458,15 @@ bool Esp32Ble::send_indication(uint16_t connection_id,
 
   if (attr_handle != 0) {
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data.data(), data.size());
-    return !ble_gatts_indicate_custom(connection_id, attr_handle, om);
+    int rc = ble_gatts_indicate_custom(connection_id, attr_handle, om);
+    if (rc == 0) {
+      // Track until the peer's confirmation (or timeout) arrives so a lost
+      // indication can be retried (see BLE_GAP_EVENT_NOTIFY_TX handler).
+      pending_indications_[{connection_id, attr_handle}] =
+          PendingIndication{attr_handle, std::vector<uint8_t>(data.begin(), data.end()), 0};
+      return true;
+    }
+    return false;
   } else {
     ESP_LOGW(TAG, "Characteristic %s not found for indication",
              characteristic_uuid.c_str());
@@ -662,6 +670,17 @@ int Esp32Ble::ble_gap_event(struct ble_gap_event *event, void *arg) {
     ESP_LOGI(TAG, "Disconnected, reason=0x%x", event->disconnect.reason);
     {
       auto self = static_cast<Esp32Ble *>(arg);
+      if (self) {
+        // Drop any indication still awaiting confirmation for this connection.
+        for (auto pit = self->pending_indications_.begin();
+             pit != self->pending_indications_.end();) {
+          if (pit->first.first == event->disconnect.conn.conn_handle) {
+            pit = self->pending_indications_.erase(pit);
+          } else {
+            ++pit;
+          }
+        }
+      }
       if (self && self->disconnect_callback_) {
         self->disconnect_callback_(event->disconnect.conn.conn_handle);
       }
@@ -684,6 +703,58 @@ int Esp32Ble::ble_gap_event(struct ble_gap_event *event, void *arg) {
       }
     }
     break;
+  case BLE_GAP_EVENT_NOTIFY_TX: {
+    if (!event->notify_tx.indication) {
+      break; // notifications need no confirmation
+    }
+    auto *self = static_cast<Esp32Ble *>(arg);
+    if (!self) {
+      break;
+    }
+    auto key = std::make_pair(event->notify_tx.conn_handle,
+                              event->notify_tx.attr_handle);
+    auto it = self->pending_indications_.find(key);
+    if (event->notify_tx.status == 0) {
+      // Transmitted; confirmation pending. Entry already recorded at send time.
+      break;
+    }
+    if (event->notify_tx.status == BLE_HS_EDONE) {
+      // Peer confirmed delivery.
+      self->pending_indications_.erase(it);
+      break;
+    }
+    if (it == self->pending_indications_.end()) {
+      break; // not ours (e.g. sent before this tracking existed)
+    }
+    if (event->notify_tx.status == BLE_HS_ETIMEOUT) {
+      // Peer never confirmed. No indication procedure is in flight after a
+      // timeout, so re-sending the same payload is safe.
+      auto pending = it->second;
+      if (pending.retries < kMaxIndicationRetries) {
+        pending.retries++;
+        ESP_LOGW(TAG, "Indication not acknowledged (conn=%u attr=%u), retry %u",
+                 event->notify_tx.conn_handle, event->notify_tx.attr_handle,
+                 pending.retries);
+        struct os_mbuf *om =
+            ble_hs_mbuf_from_flat(pending.payload.data(), pending.payload.size());
+        if (ble_gatts_indicate_custom(event->notify_tx.conn_handle,
+                                      pending.attr_handle, om) == 0) {
+          it->second.retries = pending.retries;
+          break;
+        }
+        // fall through to erase if the re-send itself failed
+      }
+      ESP_LOGE(TAG, "Indication for conn=%u attr=%u dropped after %u retries",
+               event->notify_tx.conn_handle, event->notify_tx.attr_handle,
+               pending.retries);
+      self->pending_indications_.erase(it);
+      break;
+    }
+    // Other statuses (e.g. BLE_HS_ENOTCONN): the connection is gone or dying;
+    // do not retry.
+    self->pending_indications_.erase(it);
+    break;
+  }
   case BLE_GAP_EVENT_MTU:
     ESP_LOGI(TAG, "MTU Update: conn=%d mtu=%d", event->mtu.conn_handle,
              event->mtu.value);

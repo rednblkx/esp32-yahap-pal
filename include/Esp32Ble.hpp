@@ -5,6 +5,8 @@
 #include <esp_timer.h>
 #include <host/ble_hs.h>
 #include <host/util/util.h>
+#include <map>
+#include <utility>
 #include <vector>
 
 class Esp32Ble : public hap::platform::Ble {
@@ -66,6 +68,21 @@ private:
   Advertisement timed_adv_data_;
   uint32_t normal_interval_ms_ = 1000;
   static void adv_timer_callback(void *arg);
+
+  // Indication delivery tracking. NimBLE reports each indication twice via
+  // BLE_GAP_EVENT_NOTIFY_TX: status=0 when transmitted, BLE_HS_EDONE when the
+  // peer's confirmation arrives. An entry is recorded on send and erased on
+  // ack/disconnect; BLE_HS_ETIMEOUT (peer never confirmed within NimBLE's 30s
+  // ATT timeout) triggers a retry of the same payload.
+  // Threading: ble_gap_event and send_indication both run on the NimBLE host
+  // task, so no locking is needed (single-threaded HAP callback contract).
+  struct PendingIndication {
+    uint16_t attr_handle;
+    std::vector<uint8_t> payload;
+    uint8_t retries = 0;
+  };
+  std::map<std::pair<uint16_t, uint16_t>, PendingIndication> pending_indications_;
+  static constexpr uint8_t kMaxIndicationRetries = 2;
 
   // Encrypted advertising state (for HAP Spec 7.4.6.2 Broadcasted Events)
   esp_timer_handle_t enc_adv_timer_ = nullptr;
