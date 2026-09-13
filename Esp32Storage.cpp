@@ -3,11 +3,10 @@
 #include <esp_random.h>
 #include <esp_system.h>
 #include <esp_timer.h>
-#include <iomanip>
 #include "mbedtls_compat.h"
 #include <nvs.h>
 #include <nvs_flash.h>
-#include <sstream>
+
 #include <string>
 
 static const char *TAG = "Esp32Platform";
@@ -33,12 +32,14 @@ static std::string sanitize_key(std::string_view key) {
   mbedtls_sha256(reinterpret_cast<const uint8_t *>(key.data()), key.size(),
                  hash, 0);
 
-  std::stringstream ss;
-  ss << std::hex << std::setfill('0');
+  static const char *kHex = "0123456789abcdef";
+  std::string out;
+  out.reserve(14);
   for (int i = 0; i < 7; ++i) {
-    ss << std::setw(2) << static_cast<int>(hash[i]);
+    out.push_back(kHex[(hash[i] >> 4) & 0xF]);
+    out.push_back(kHex[hash[i] & 0xF]);
   }
-  return ss.str();
+  return out;
 }
 
 void Esp32Storage::set(std::string_view key, std::span<const uint8_t> value) {
