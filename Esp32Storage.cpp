@@ -4,7 +4,7 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <iomanip>
-#include <mbedtls/sha256.h>
+#include "mbedtls_compat.h"
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <sstream>

@@ -1,14 +1,10 @@
 #include "Esp32Crypto.hpp"
+#include "mbedtls_compat.h"
 #include <cstring>
 #include <esp_err.h>
 #include <esp_log.h>
-#include <mbedtls/bignum.h>
-#if CONFIG_PAL_CRYPTO_HKDF
-#include <mbedtls/hkdf.h>
-#else
-#error "HKDF is not enabled. HAP requires HKDF for Pairing."
-#endif
-#include <mbedtls/sha512.h>
+#include <mutex>
+#include <psa/crypto.h>
 #include <sodium.h>
 #include <vector>
 
@@ -49,18 +45,126 @@ struct Esp32SRPSession : public hap::platform::SRPSession {
 
 Esp32Crypto::Esp32Crypto() {}
 
+static void ensure_psa_init() {
+  static std::once_flag flag;
+  std::call_once(flag, []() {
+    psa_status_t status = psa_crypto_init();
+    if (status != PSA_SUCCESS) {
+      ESP_LOGE(TAG, "psa_crypto_init failed: %d", (int)status);
+    }
+  });
+}
+
+static bool sha512_multi(std::initializer_list<std::span<const uint8_t>> parts,
+                         uint8_t out[64]) {
+  ensure_psa_init();
+  psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+  if (psa_hash_setup(&op, PSA_ALG_SHA_512) != PSA_SUCCESS) {
+    return false;
+  }
+  bool ok = true;
+  for (auto part : parts) {
+    if (psa_hash_update(&op, part.data(), part.size()) != PSA_SUCCESS) {
+      ok = false;
+      break;
+    }
+  }
+  size_t len = 0;
+  if (ok && psa_hash_finish(&op, out, 64, &len) != PSA_SUCCESS) {
+    ok = false;
+  }
+  if (!ok) {
+    psa_hash_abort(&op);
+  }
+  return ok;
+}
+
+static bool sha512_one(const uint8_t *data, size_t len, uint8_t out[64]) {
+  return sha512_multi({std::span<const uint8_t>(data, len)}, out);
+}
+
+static bool hmac_sha512(std::span<const uint8_t> key,
+                        std::span<const uint8_t> data,
+                        uint8_t mac[64]) {
+  constexpr size_t kBlock = 128;  // SHA-512 block size
+  uint8_t k0[kBlock];
+  memset(k0, 0, sizeof(k0));
+  if (key.size() > kBlock) {
+    if (!sha512_one(key.data(), key.size(), k0)) {
+      return false;
+    }
+  } else {
+    memcpy(k0, key.data(), key.size());
+  }
+
+  uint8_t ipad[kBlock];
+  uint8_t opad[kBlock];
+  for (size_t i = 0; i < kBlock; i++) {
+    ipad[i] = k0[i] ^ 0x36;
+    opad[i] = k0[i] ^ 0x5c;
+  }
+
+  uint8_t inner[64];
+  uint8_t buf[kBlock + 64];
+  memcpy(buf, ipad, kBlock);
+  if (data.size() > 0) {
+    memcpy(buf + kBlock, data.data(), data.size());
+  }
+  if (!sha512_one(buf, kBlock + data.size(), inner)) {
+    return false;
+  }
+
+  memcpy(buf, opad, kBlock);
+  memcpy(buf + kBlock, inner, 64);
+  return sha512_one(buf, kBlock + 64, mac);
+}
+
 void Esp32Crypto::sha512(std::span<const uint8_t> data,
                          std::span<uint8_t, 64> output) {
-  mbedtls_sha512(data.data(), data.size(), output.data(), 0);
+  if (!sha512_multi({data}, output.data())) {
+    ESP_LOGE(TAG, "SHA-512 failed");
+  }
 }
 
 void Esp32Crypto::hkdf_sha512(std::span<const uint8_t> key,
                               std::span<const uint8_t> salt,
                               std::span<const uint8_t> info,
                               std::span<uint8_t> output) {
-  mbedtls_hkdf(mbedtls_md_info_from_type(MBEDTLS_MD_SHA512), salt.data(),
-               salt.size(), key.data(), key.size(), info.data(), info.size(),
-               output.data(), output.size());
+  // RFC 5869: PRK = HMAC-SHA512(salt, IKM); OKM = T(1..N) where
+  // T(i) = HMAC-SHA512(PRK, T(i-1) | info | i).
+  std::vector<uint8_t> prk(64);
+  if (!hmac_sha512(salt, key, prk.data())) {
+    ESP_LOGE(TAG, "HKDF extract failed");
+    return;
+  }
+
+  uint8_t t[64];
+  size_t t_len = 0;  // T(i-1), empty for i=1
+  size_t offset = 0;
+  for (uint8_t counter = 1; offset < output.size(); ++counter) {
+    uint8_t block[64 + 255];
+    size_t block_len = 0;
+    if (t_len > 0) {
+      memcpy(block, t, t_len);
+      block_len = t_len;
+    }
+    memcpy(block + block_len, info.data(), info.size());
+    block_len += info.size();
+    block[block_len++] = counter;
+
+    if (!hmac_sha512(std::span<const uint8_t>(prk.data(), prk.size()),
+                     std::span<const uint8_t>(block, block_len), t)) {
+      ESP_LOGE(TAG, "HKDF expand failed");
+      return;
+    }
+    t_len = 64;
+    size_t n = output.size() - offset;
+    if (n > 64) {
+      n = 64;
+    }
+    memcpy(output.data() + offset, t, n);
+    offset += n;
+  }
 }
 
 void Esp32Crypto::ed25519_generate_keypair(std::span<uint8_t, 32> public_key,
@@ -137,11 +241,6 @@ static void mpi_to_bytes_pad(const mbedtls_mpi *x, std::vector<uint8_t> &out,
   mbedtls_mpi_write_binary(x, out.data() + (pad_len - len), len);
 }
 
-static void hash_update(mbedtls_sha512_context *ctx,
-                        std::span<const uint8_t> data) {
-  mbedtls_sha512_update(ctx, data.data(), data.size());
-}
-
 static size_t count_leading_zeros(const uint8_t *data, size_t len) {
   size_t z = 0;
   while (z < len && data[z] == 0) {
@@ -157,22 +256,28 @@ Esp32Crypto::srp_new_verifier(std::string_view username,
 
   // x = H(s | H(I | ":" | P))
   std::vector<uint8_t> inner_hash(64);
-  mbedtls_sha512_context ctx;
-  mbedtls_sha512_init(&ctx);
-  mbedtls_sha512_starts(&ctx, 0);
-  mbedtls_sha512_update(&ctx, (const uint8_t *)username.data(),
-                        username.size());
-  mbedtls_sha512_update(&ctx, (const uint8_t *)":", 1);
-  mbedtls_sha512_update(&ctx, (const uint8_t *)password.data(),
-                        password.size());
-  mbedtls_sha512_finish(&ctx, inner_hash.data());
+  {
+    const uint8_t colon = ':';
+    uint8_t inner[64];
+    if (!sha512_multi({std::span<const uint8_t>(
+                               reinterpret_cast<const uint8_t *>(username.data()),
+                               username.size()),
+                           std::span<const uint8_t>(&colon, 1),
+                           std::span<const uint8_t>(
+                               reinterpret_cast<const uint8_t *>(password.data()),
+                               password.size())},
+                          inner)) {
+      ESP_LOGE(TAG, "srp_new_verifier: inner hash failed");
+      return nullptr;
+    }
+    inner_hash.assign(inner, inner + 64);
+  }
 
   std::vector<uint8_t> x_hash(64);
-  mbedtls_sha512_starts(&ctx, 0);
-  mbedtls_sha512_update(&ctx, s.data(), s.size());
-  mbedtls_sha512_update(&ctx, inner_hash.data(), inner_hash.size());
-  mbedtls_sha512_finish(&ctx, x_hash.data());
-  mbedtls_sha512_free(&ctx);
+  if (!sha512_multi({s, inner_hash}, x_hash.data())) {
+    ESP_LOGE(TAG, "srp_new_verifier: x hash failed");
+    return nullptr;
+  }
 
   // v = g^x mod N
   mbedtls_mpi N, g, x, v;
@@ -265,13 +370,10 @@ Esp32Crypto::srp_get_public_key(hap::platform::SRPSession *session) {
   mpi_to_bytes_pad(&g, g_bytes_padded, N_bytes.size()); // Pad g to N size
 
   std::vector<uint8_t> k_hash(64);
-  mbedtls_sha512_context ctx;
-  mbedtls_sha512_init(&ctx);
-  mbedtls_sha512_starts(&ctx, 0);
-  hash_update(&ctx, N_bytes);
-  hash_update(&ctx, g_bytes_padded);
-  mbedtls_sha512_finish(&ctx, k_hash.data());
-  mbedtls_sha512_free(&ctx);
+  if (!sha512_multi({N_bytes, g_bytes_padded}, k_hash.data())) {
+    ESP_LOGE(TAG, "k hash failed");
+    return {};
+  }
 
   mbedtls_mpi_read_binary(&k_mpi, k_hash.data(), k_hash.size());
 
@@ -336,12 +438,10 @@ bool Esp32Crypto::srp_verify_client_proof(hap::platform::SRPSession *session,
   mpi_to_bytes_pad(&B, B_pad, param_len);
 
   std::vector<uint8_t> u_hash(64);
-  mbedtls_sha512_context ctx;
-  mbedtls_sha512_init(&ctx);
-  mbedtls_sha512_starts(&ctx, 0);
-  hash_update(&ctx, A_pad);
-  hash_update(&ctx, B_pad);
-  mbedtls_sha512_finish(&ctx, u_hash.data());
+  if (!sha512_multi({A_pad, B_pad}, u_hash.data())) {
+    ESP_LOGE(TAG, "u hash failed");
+    return false;
+  }
 
   mbedtls_mpi_read_binary(&u_mpi, u_hash.data(), u_hash.size());
 
@@ -361,9 +461,12 @@ bool Esp32Crypto::srp_verify_client_proof(hap::platform::SRPSession *session,
   // K = H(S) where S has leading zeros stripped (HAP spec)
   size_t z_S = count_leading_zeros(ess->S.data(), ess->S.size());
   ess->K.resize(64);
-  mbedtls_sha512_starts(&ctx, 0);
-  mbedtls_sha512_update(&ctx, ess->S.data() + z_S, ess->S.size() - z_S);
-  mbedtls_sha512_finish(&ctx, ess->K.data());
+  if (!sha512_multi(
+          {std::span<const uint8_t>(ess->S.data() + z_S, ess->S.size() - z_S)},
+          ess->K.data())) {
+    ESP_LOGE(TAG, "K hash failed");
+    return false;
+  }
 
   // M1 = H(H(N) xor H(g) | H(I) | s | A | B | K)
   // HAP Spec: A and B are padded to 384 bytes (SRP_PUBLIC_KEY_BYTES)
@@ -376,16 +479,17 @@ bool Esp32Crypto::srp_verify_client_proof(hap::platform::SRPSession *session,
   mpi_to_bytes(&N, N_bytes);
   mpi_to_bytes(&g_mpi, g_bytes);
 
-  mbedtls_sha512_starts(&ctx, 0);
-  hash_update(&ctx, N_bytes);
-  mbedtls_sha512_finish(&ctx, hN.data());
-  mbedtls_sha512_starts(&ctx, 0);
-  hash_update(&ctx, g_bytes);
-  mbedtls_sha512_finish(&ctx, hg.data());
-  mbedtls_sha512_starts(&ctx, 0);
-  mbedtls_sha512_update(&ctx, (const uint8_t *)session->username.data(),
-                        session->username.size());
-  mbedtls_sha512_finish(&ctx, hI.data());
+  if (!sha512_multi({N_bytes}, hN.data()) ||
+      !sha512_multi({g_bytes}, hg.data()) ||
+      !sha512_multi({std::span<const uint8_t>(
+                            reinterpret_cast<const uint8_t *>(
+                                session->username.data()),
+                            session->username.size())},
+                        hI.data())) {
+    ESP_LOGE(TAG, "M1 pre-hash failed");
+    mbedtls_mpi_free(&g_mpi);
+    return false;
+  }
 
   for (size_t i = 0; i < 64; i++)
     hN[i] ^= hg[i];
@@ -399,14 +503,17 @@ bool Esp32Crypto::srp_verify_client_proof(hap::platform::SRPSession *session,
   size_t z_B = count_leading_zeros(B_padded.data(), B_padded.size());
 
   std::vector<uint8_t> M1_calc(64);
-  mbedtls_sha512_starts(&ctx, 0);
-  hash_update(&ctx, hN);
-  hash_update(&ctx, hI);
-  hash_update(&ctx, ess->salt);
-  mbedtls_sha512_update(&ctx, A_padded.data() + z_A, A_padded.size() - z_A);
-  mbedtls_sha512_update(&ctx, B_padded.data() + z_B, B_padded.size() - z_B);
-  hash_update(&ctx, ess->K);
-  mbedtls_sha512_finish(&ctx, M1_calc.data());
+  if (!sha512_multi({hN, hI, ess->salt,
+                         std::span<const uint8_t>(A_padded.data() + z_A,
+                                                  A_padded.size() - z_A),
+                         std::span<const uint8_t>(B_padded.data() + z_B,
+                                                  B_padded.size() - z_B),
+                         ess->K},
+                        M1_calc.data())) {
+    ESP_LOGE(TAG, "M1 hash failed");
+    mbedtls_mpi_free(&g_mpi);
+    return false;
+  }
 
   if (proof.size() != M1_calc.size() ||
       std::memcmp(proof.data(), M1_calc.data(), proof.size()) != 0) {
@@ -419,17 +526,16 @@ bool Esp32Crypto::srp_verify_client_proof(hap::platform::SRPSession *session,
     mbedtls_mpi_free(&S);
     mbedtls_mpi_free(&u_mpi);
     mbedtls_mpi_free(&g_mpi);
-    mbedtls_sha512_free(&ctx);
     return false;
   }
 
   // M2 = H(A | M1 | K)
   ess->M2.resize(64);
-  mbedtls_sha512_starts(&ctx, 0);
-  hash_update(&ctx, A_padded);
-  hash_update(&ctx, M1_calc);
-  hash_update(&ctx, ess->K);
-  mbedtls_sha512_finish(&ctx, ess->M2.data());
+  if (!sha512_multi({A_padded, M1_calc, ess->K}, ess->M2.data())) {
+    ESP_LOGE(TAG, "M2 hash failed");
+    mbedtls_mpi_free(&g_mpi);
+    return false;
+  }
 
   mbedtls_mpi_free(&N);
   mbedtls_mpi_free(&A);
@@ -439,7 +545,6 @@ bool Esp32Crypto::srp_verify_client_proof(hap::platform::SRPSession *session,
   mbedtls_mpi_free(&S);
   mbedtls_mpi_free(&u_mpi);
   mbedtls_mpi_free(&g_mpi);
-  mbedtls_sha512_free(&ctx);
 
   return true;
 }
