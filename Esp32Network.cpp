@@ -60,18 +60,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
 #ifdef CONFIG_IDF_TARGET_ESP32C6
     if (phymode == WIFI_PHY_MODE_HE20) {
       esp_err_t err = ESP_OK;
-      wifi_itwt_setup_config_t setup_config = {
-          .setup_cmd = TWT_REQUEST,
-          .trigger = trigger_enabled,
-          .flow_type = static_cast<uint16_t>(flow_type_announced ? 0 : 1),
-          .flow_id = 0,
-          .wake_invl_expn = CONFIG_ITWT_WAKE_INVL_EXPN,
-          .wake_duration_unit = CONFIG_ITWT_WAKE_DURATION_UNIT,
-          .min_wake_dura = CONFIG_ITWT_MIN_WAKE_DURA,
-          .wake_invl_mant = CONFIG_ITWT_WAKE_INVL_MANT,
-          .twt_id = CONFIG_ITWT_ID,
-          .timeout_time_ms = CONFIG_ITWT_SETUP_TIMEOUT_TIME_MS,
-      };
+      wifi_itwt_setup_config_t setup_config{};
+      setup_config.setup_cmd = TWT_REQUEST;
+      setup_config.trigger = trigger_enabled;
+      setup_config.flow_type = static_cast<uint16_t>(flow_type_announced ? 0 : 1);
+      setup_config.flow_id = 0;
+      setup_config.wake_invl_expn = CONFIG_ITWT_WAKE_INVL_EXPN;
+      setup_config.wake_duration_unit = CONFIG_ITWT_WAKE_DURATION_UNIT;
+      setup_config.min_wake_dura = CONFIG_ITWT_MIN_WAKE_DURA;
+      setup_config.wake_invl_mant = CONFIG_ITWT_WAKE_INVL_MANT;
+      setup_config.twt_id = CONFIG_ITWT_ID;
+      setup_config.timeout_time_ms = CONFIG_ITWT_SETUP_TIMEOUT_TIME_MS;
       err = esp_wifi_sta_itwt_setup(&setup_config);
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "itwt setup failed, err:0x%x", err);
