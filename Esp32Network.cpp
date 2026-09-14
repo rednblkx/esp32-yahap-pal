@@ -299,7 +299,6 @@ void Esp32Network::mdns_register(const MdnsService &service) {
 
   mdns_hostname_set(hostname.c_str());
 #endif
-  mdns_service_instance_name_set("_hap", "_tcp", hostname.c_str());
   err = mdns_service_add(hostname.c_str(), "_hap", "_tcp", service.port,
                          nullptr, 0);
   if (err != ESP_OK) {
